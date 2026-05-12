@@ -7,13 +7,16 @@ import bcrypt
 from datetime import datetime, date
 import uuid
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DB_CONFIG = {
-    'host': 'parking-system-db-sensuikegaming-6a67.d.aivencloud.com',
-    'port': 26159,
-    'database': 'parkease',
-    'user': 'avnadmin',         # Change to your MySQL username
-    'password': 'AVNS_1EdmKTkVoJNn3EuH6OJ',         # Change to your MySQL password
+    'host': os.getenv('DB_HOST'),
+    'port': int(os.getenv('DB_PORT')),
+    'database': os.getenv('DB_NAME'),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
     'autocommit': True,
     'connection_timeout': 10,
     'ssl_ca': 'utils/ca.pem',
