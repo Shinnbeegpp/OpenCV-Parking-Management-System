@@ -145,17 +145,12 @@ class CameraWorker(QThread):
 
     def run(self):
         self._running = True
-        VIDEO_FILE = r"C:\Users\Jonard Marfa\Downloads\1.1-invideo-veo_31_lite.mp4"
-        cap = cv2.VideoCapture(VIDEO_FILE)
-
-        # self._running = True
-        # cap = cv2.VideoCapture(self.camera_index)
+        cap = cv2.VideoCapture(self.camera_index)
 
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
         if not cap.isOpened():
-            # self.error_signal.emit(f"Cannot open video file {VIDEO_FILE}")
             self.error_signal.emit(f"Cannot open camera {self.camera_index}")
             return
 

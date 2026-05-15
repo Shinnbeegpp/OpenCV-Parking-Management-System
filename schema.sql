@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS shifts (
 INSERT IGNORE INTO admins (username, password_hash, full_name)
 VALUES ('admin', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMlJbekRSjelMnFHMKlpDNJH4K', 'System Administrator');
 
--- Note: To create your own admin, run:
+-- Note: To create additional admin accounts, use fix_admin.py or generate
+-- a bcrypt hash in Python and insert it directly:
+--   import bcrypt
+--   hash = bcrypt.hashpw(b'yourpassword', bcrypt.gensalt()).decode()
 -- INSERT INTO admins (username, password_hash, full_name)
--- VALUES ('yourusername', SHA2('yourpassword', 256), 'Your Name');
+-- VALUES ('yourusername', '<bcrypt_hash>', 'Your Name');
