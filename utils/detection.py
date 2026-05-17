@@ -134,9 +134,10 @@ class CameraWorker(QThread):
 
     COOLDOWN_SECONDS = 30   # don't re-detect same vehicle within N seconds
 
-    def __init__(self, camera_index=0, mode='entry', parent=None):
+    def __init__(self, camera_index=0, mode='entry', video_file=None, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
+        self.video_file = video_file
         self.mode = mode  # 'entry' or 'exit'
         self._running = False
         self._mutex = QMutex()
@@ -145,7 +146,8 @@ class CameraWorker(QThread):
 
     def run(self):
         self._running = True
-        cap = cv2.VideoCapture(self.camera_index)
+        source = self.video_file if self.video_file else self.camera_index
+        cap = cv2.VideoCapture(source)
 
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -162,6 +164,9 @@ class CameraWorker(QThread):
         while self._running:
             ret, frame = cap.read()
             if not ret:
+                if self.video_file:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
                 time.sleep(0.05)
                 continue
 

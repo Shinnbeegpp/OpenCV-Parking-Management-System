@@ -79,3 +79,54 @@ VALUES ('admin', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMlJbekRSjelMnFHMKlpDNJH4K',
 --   hash = bcrypt.hashpw(b'yourpassword', bcrypt.gensalt()).decode()
 -- INSERT INTO admins (username, password_hash, full_name)
 -- VALUES ('yourusername', '<bcrypt_hash>', 'Your Name');
+-- Settings table (single row, stores all system config)
+CREATE TABLE IF NOT EXISTS settings (
+    id INT PRIMARY KEY DEFAULT 1,
+    parking_capacity INT DEFAULT 50,
+    rate_type ENUM('hourly', 'flat', 'daily_max') DEFAULT 'hourly',
+    rate_per_hour DECIMAL(10,2) DEFAULT 10.00,
+    flat_rate DECIMAL(10,2) DEFAULT 10.00,
+    daily_max_rate DECIMAL(10,2) DEFAULT 100.00,
+    minimum_charge DECIMAL(10,2) DEFAULT 10.00,
+    overstay_hours INT DEFAULT 24,
+    entry_camera_index INT DEFAULT 0,
+    exit_camera_index INT DEFAULT 1,
+    demo_video_path VARCHAR(500) DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Insert default settings
+INSERT IGNORE INTO settings (id) VALUES (1);
+
+-- Blacklist table
+CREATE TABLE IF NOT EXISTS blacklist (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    plate_number VARCHAR(20) UNIQUE NOT NULL,
+    reason TEXT,
+    added_by INT NOT NULL,
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE,
+    FOREIGN KEY (added_by) REFERENCES admins(id)
+);
+
+-- Migrations for existing databases (safe to re-run)
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS entry_camera_index INT DEFAULT 0;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS exit_camera_index INT DEFAULT 1;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS demo_video_path VARCHAR(500) DEFAULT '';
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS is_resolved BOOLEAN DEFAULT FALSE;
+
+-- Reserved/monthly vehicles
+CREATE TABLE IF NOT EXISTS reserved_vehicles (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    plate_number VARCHAR(20) UNIQUE NOT NULL,
+    owner_name VARCHAR(100) NOT NULL,
+    contact_number VARCHAR(20),
+    monthly_fee DECIMAL(10,2) DEFAULT 0.00,
+    start_date DATE NOT NULL,
+    expiry_date DATE NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    added_by_type ENUM('admin', 'staff') NOT NULL,
+    added_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

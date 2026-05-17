@@ -52,6 +52,10 @@ QPushButton:disabled {{
     color: {COLORS['text_dim']};
 }}
 
+QTableWidget QPushButton {{
+    min-height: 0px;
+}}
+
 QPushButton[btnStyle="secondary"] {{
     background-color: {COLORS['bg_input']};
     color: {COLORS['text']};
@@ -106,6 +110,7 @@ QComboBox QAbstractItemView {{
 
 QTableWidget {{
     background-color: {COLORS['bg_card']};
+    alternate-background-color: {COLORS['bg']};
     color: {COLORS['text']};
     border: 1px solid {COLORS['border']};
     border-radius: 10px;
@@ -198,6 +203,33 @@ QToolTip {{
     border: 1px solid {COLORS['border']};
     border-radius: 6px;
     padding: 4px 8px;
+}}
+
+QFrame[card="true"] {{
+    background: {COLORS['bg_card']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 12px;
+}}
+
+QFrame[card="inner"] {{
+    background: {COLORS['bg_input']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 7px;
+}}
+
+QPushButton[btnStyle="compact"] {{
+    background-color: {COLORS['bg_input']};
+    color: {COLORS['text_muted']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0 12px;
+    min-height: 0px;
+}}
+QPushButton[btnStyle="compact"]:hover {{
+    background-color: {COLORS['bg_hover']};
+    color: {COLORS['text']};
 }}
 """
 

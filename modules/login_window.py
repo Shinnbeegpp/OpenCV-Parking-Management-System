@@ -112,11 +112,6 @@ class LoginWindow(QWidget):
         root.addWidget(card)
         root.addStretch()
 
-        footer = QLabel("© 2025 ParkEase · All rights reserved")
-        footer.setAlignment(Qt.AlignCenter)
-        footer.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        root.addWidget(footer)
-
     def _do_login(self):
         username = self.username_input.text().strip()
         password = self.password_input.text()

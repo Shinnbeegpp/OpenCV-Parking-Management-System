@@ -135,7 +135,8 @@ class SearchableTable(QWidget):
                 item = QTableWidgetItem(str(val) if val is not None else "—")
                 item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.table.setItem(r, c, item)
-        self.table.resizeRowsToContents()
+        for i in range(self.table.rowCount()):
+            self.table.setRowHeight(i, 48)
 
     def _filter(self, text):
         text = text.lower()
@@ -349,15 +350,15 @@ class ManualInputDialog(QDialog):
 # ─── EXIT CONFIRMATION DIALOG ─────────────────────────────────────────────────
 
 class ExitConfirmDialog(QDialog):
-    def __init__(self, txn_data: dict, parent=None):
+    def __init__(self, txn_data: dict, is_reserved: bool = False, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Vehicle Exit — Confirm Charge")
-        self.setFixedSize(440, 360)
+        self.setFixedSize(440, 400 if is_reserved else 360)
         self.confirmed = False
         self.setStyleSheet(f"QDialog {{ background-color: {COLORS['bg']}; color: {COLORS['text']}; }}")
-        self._build(txn_data)
+        self._build(txn_data, is_reserved)
 
-    def _build(self, d):
+    def _build(self, d, is_reserved=False):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
         lay.setSpacing(14)
@@ -375,6 +376,11 @@ class ExitConfirmDialog(QDialog):
         cl.setContentsMargins(20, 16, 20, 16)
         cl.setSpacing(10)
 
+        def _fmt_time(val):
+            if hasattr(val, 'strftime'):
+                return val.strftime("%H:%M:%S")
+            return '—' if val is None else str(val)
+
         def row(label, val, big=False):
             r = QHBoxLayout()
             lbl = QLabel(label)
@@ -391,8 +397,8 @@ class ExitConfirmDialog(QDialog):
 
         row("Plate Number",  d.get('plate_number', '—'))
         row("Vehicle Type",  d.get('vehicle_type', '—'))
-        row("Time In",       d.get('time_in', '—'))
-        row("Time Out",      d.get('time_out', '—'))
+        row("Time In",       _fmt_time(d.get('time_in')))
+        row("Time Out",      _fmt_time(d.get('time_out')))
 
         mins = d.get('duration_minutes', 0)
         h, m = divmod(mins, 60)
@@ -404,6 +410,17 @@ class ExitConfirmDialog(QDialog):
 
         row("Total Charge",  f"₱{d.get('total_charge', 0):.2f}", big=True)
         lay.addWidget(card)
+
+        if is_reserved:
+            badge = QLabel("Reserved Monthly Parker — ₱0 Charge Applied")
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setStyleSheet(f"""
+                background: {COLORS['success']}18; color: {COLORS['success']};
+                border: 1px solid {COLORS['success']}40;
+                border-radius: 6px; padding: 8px 12px;
+                font-size: 12px; font-weight: 600;
+            """)
+            lay.addWidget(badge)
 
         lay.addStretch()
         btns = QHBoxLayout()

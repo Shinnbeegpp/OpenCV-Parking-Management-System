@@ -2,14 +2,17 @@
 
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QLabel, QPushButton, QStackedWidget, QFrame,
-                              QScrollArea, QSizePolicy, QMessageBox, QSplitter)
+                              QScrollArea, QSizePolicy, QMessageBox, QSplitter,
+                              QFileDialog, QInputDialog, QDialog)
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-from PyQt5.QtGui import QPixmap, QImage, QFont
+from PyQt5.QtGui import QPixmap, QImage, QFont, QColor
 
 from utils.styles import COLORS
 from utils.database import (log_vehicle_entry, log_vehicle_exit,
                              get_active_vehicles, get_completed_transactions,
-                             find_active_vehicle_by_plate, log_activity, end_shift)
+                             find_active_vehicle_by_plate, log_activity, end_shift,
+                             get_dashboard_summary, get_overstay_vehicles, is_blacklisted,
+                             get_settings)
 from utils.detection import CameraWorker, load_models
 from modules.widgets import (SideNav, StatCard, SearchableTable, SectionLabel,
                               ManualInputDialog, ExitConfirmDialog, BlindDropDialog)
@@ -22,6 +25,7 @@ class StaffWindow(QMainWindow):
         super().__init__()
         self.user = user_info
         self.on_logout = on_logout
+
         self.setWindowTitle(f"ParkEase — Staff Panel  ({user_info['full_name']})")
         self.setMinimumSize(1200, 750)
         self.resize(1280, 800)
@@ -36,6 +40,7 @@ class StaffWindow(QMainWindow):
 
         self._build_ui()
         self._start_cameras()
+        self._load_dashboard_summary()
 
         # Auto-refresh tables every 30 s
         self._refresh_timer = QTimer(self)
@@ -117,6 +122,15 @@ class StaffWindow(QMainWindow):
         t.setStyleSheet(f"font-size: 20px; font-weight: 700; color: {COLORS['text']};")
         hdr.addWidget(t)
         hdr.addStretch()
+        manual_entry_btn = QPushButton("+ Manual Entry")
+        manual_entry_btn.setFixedHeight(34)
+        manual_entry_btn.setStyleSheet(f"""
+            QPushButton {{ background: {COLORS['success']}; color: white; border: none;
+                border-radius: 7px; font-size: 12px; font-weight: 600; padding: 0 14px; }}
+            QPushButton:hover {{ background: #059669; }}
+        """)
+        manual_entry_btn.clicked.connect(self._on_manual_entry)
+        hdr.addWidget(manual_entry_btn)
         self.clock_lbl = QLabel()
         self.clock_lbl.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 13px;")
         hdr.addWidget(self.clock_lbl)
@@ -143,25 +157,34 @@ class StaffWindow(QMainWindow):
         self.entry_cam_lbl = self._camera_placeholder("ENTRY CAM", COLORS['success'])
         self.exit_cam_lbl  = self._camera_placeholder("EXIT CAM",  COLORS['primary'])
 
-        self.entry_toggle = QPushButton("⏹ Stop Entry Cam")
+        self.entry_toggle = QPushButton("▶ Start Entry Cam")
         self.entry_toggle.setFixedHeight(32)
         self.entry_toggle.setStyleSheet(f"""
-            QPushButton {{ background: {COLORS['danger']}; color: white; border: none;
+            QPushButton {{ background: {COLORS['success']}; color: white; border: none;
                 border-radius: 6px; font-size: 12px; font-weight: 600; padding: 0 12px; }}
-            QPushButton:hover {{ background: #DC2626; }}
+            QPushButton:hover {{ background: #059669; }}
         """)
         self.entry_toggle.clicked.connect(self._toggle_entry_cam)
-        self._entry_cam_on = True
+        self._entry_cam_on = False
 
-        self.exit_toggle = QPushButton("⏹ Stop Exit Cam")
+        self.exit_toggle = QPushButton("▶ Start Exit Cam")
         self.exit_toggle.setFixedHeight(32)
         self.exit_toggle.setStyleSheet(f"""
-            QPushButton {{ background: {COLORS['danger']}; color: white; border: none;
+            QPushButton {{ background: {COLORS['success']}; color: white; border: none;
                 border-radius: 6px; font-size: 12px; font-weight: 600; padding: 0 12px; }}
-            QPushButton:hover {{ background: #DC2626; }}
+            QPushButton:hover {{ background: #059669; }}
         """)
         self.exit_toggle.clicked.connect(self._toggle_exit_cam)
-        self._exit_cam_on = True
+        self._exit_cam_on = False
+
+        self._cam_hint_lbl = QLabel("Click Start to activate cameras")
+        self._cam_hint_lbl.setAlignment(Qt.AlignCenter)
+        self._cam_hint_lbl.setStyleSheet(f"""
+            color: {COLORS['text_muted']}; font-size: 12px;
+            background: {COLORS['bg_input']}; border-radius: 6px;
+            padding: 6px 0; border: 1px solid {COLORS['border']};
+        """)
+        lay.addWidget(self._cam_hint_lbl)
 
         entry_card = self._cam_card("Entry Camera", self.entry_cam_lbl, self.entry_toggle)
         exit_card  = self._cam_card("Exit Camera",  self.exit_cam_lbl,  self.exit_toggle)
@@ -169,15 +192,16 @@ class StaffWindow(QMainWindow):
         cam_row.addWidget(exit_card)
         lay.addLayout(cam_row)
 
-        # Summary row
-        
+        # Summary row — entries, exits, capacity, overstays
         sum_row = QHBoxLayout()
         sum_row.setSpacing(14)
 
-        self.entry_card = StatCard("ENTRIES TODAY", "0", accent=COLORS['success'])
-        self.exit_card2  = StatCard("EXITS TODAY",   "0", accent=COLORS['primary'])
-        sum_row.addWidget(self.entry_card)
-        sum_row.addWidget(self.exit_card2)
+        self.entry_card        = StatCard("ENTRIES TODAY",     "0",   accent=COLORS['success'])
+        self.exit_card2        = StatCard("EXITS TODAY",       "0",   accent=COLORS['primary'])
+        self.capacity_card     = StatCard("PARKING CAPACITY",  "—/—", accent=COLORS['accent'])
+        self.overstay_stat_card = StatCard("OVERSTAYS",        "0",   accent=COLORS['danger'])
+        for c in [self.entry_card, self.exit_card2, self.capacity_card, self.overstay_stat_card]:
+            sum_row.addWidget(c)
         lay.addLayout(sum_row)
 
         # Recent lists
@@ -193,7 +217,7 @@ class StaffWindow(QMainWindow):
         return page
 
     def _camera_placeholder(self, label, color):
-        lbl = QLabel(f"📷  {label}\nCamera loading…")
+        lbl = QLabel(f"📷  {label}\nCamera stopped")
         lbl.setAlignment(Qt.AlignCenter)
         lbl.setFixedHeight(280)
         lbl.setStyleSheet(f"""
@@ -205,10 +229,7 @@ class StaffWindow(QMainWindow):
 
     def _cam_card(self, title, cam_lbl, toggle_btn=None):
         card = QFrame()
-        card.setStyleSheet(f"""
-            background: {COLORS['bg_card']}; border: 1px solid {COLORS['border']};
-            border-radius: 12px;
-        """)
+        card.setProperty("card", "true")
         cl = QVBoxLayout(card)
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(8)
@@ -226,10 +247,7 @@ class StaffWindow(QMainWindow):
 
     def _build_recent_frame(self, title, accent):
         card = QFrame()
-        card.setStyleSheet(f"""
-            background: {COLORS['bg_card']}; border: 1px solid {COLORS['border']};
-            border-radius: 12px;
-        """)
+        card.setProperty("card", "true")
         cl = QVBoxLayout(card)
         cl.setContentsMargins(16, 14, 16, 14)
         cl.setSpacing(8)
@@ -268,10 +286,7 @@ class StaffWindow(QMainWindow):
 
         for item in items[:3]:
             row = QFrame()
-            row.setStyleSheet(f"""
-                background: {COLORS['bg_input']}; border-radius: 7px;
-                border: 1px solid {COLORS['border']};
-            """)
+            row.setProperty("card", "inner")
             rl = QHBoxLayout(row)
             rl.setContentsMargins(12, 8, 12, 8)
 
@@ -296,6 +311,17 @@ class StaffWindow(QMainWindow):
 
             lay.addWidget(row)
 
+    def _load_dashboard_summary(self):
+        try:
+            summary = get_dashboard_summary()
+            if summary:
+                capacity = int(summary.get('capacity') or 50)
+                parked   = int(summary.get('currently_parked') or 0)
+                self.capacity_card.set_value(f"{parked}/{capacity}")
+                self.overstay_stat_card.set_value(summary.get('overstay_count', 0))
+        except Exception:
+            pass
+
     # ──────────────────────────────────────────────────────────────────────────
     # PAGE 2 — ACTIVE PARKING
     # ──────────────────────────────────────────────────────────────────────────
@@ -307,22 +333,44 @@ class StaffWindow(QMainWindow):
         lay.setSpacing(16)
 
         hdr = QHBoxLayout()
+        hdr.setSpacing(8)
         t = QLabel("Active Parking List")
         t.setStyleSheet(f"font-size: 20px; font-weight: 700; color: {COLORS['text']};")
         hdr.addWidget(t)
         hdr.addStretch()
+
+        overstay_legend = QLabel("⚑  Overstay")
+        overstay_legend.setFixedSize(100, 34)
+        overstay_legend.setAlignment(Qt.AlignCenter)
+        overstay_legend.setStyleSheet(f"""
+            background: {COLORS['warning']}18; color: {COLORS['warning']};
+            border: 1px solid {COLORS['warning']}40; border-radius: 5px;
+            font-size: 11px; font-weight: 600;
+        """)
+        hdr.addWidget(overstay_legend)
+
         ref_btn = QPushButton("↻  Refresh")
-        ref_btn.setFixedSize(100, 34)
+        ref_btn.setFixedHeight(34)
         ref_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {COLORS['bg_input']}; color: {COLORS['text_muted']};
                 border: 1px solid {COLORS['border']}; border-radius: 7px;
-                font-size: 12px;
+                font-size: 12px; padding: 0 12px; min-height: 0px;
             }}
             QPushButton:hover {{ background: {COLORS['bg_hover']}; color: {COLORS['text']}; }}
         """)
         ref_btn.clicked.connect(self._load_active)
         hdr.addWidget(ref_btn)
+
+        manual_exit_btn = QPushButton("Manual Exit")
+        manual_exit_btn.setFixedHeight(34)
+        manual_exit_btn.setStyleSheet(f"""
+            QPushButton {{ background: {COLORS['primary']}; color: white; border: none;
+                border-radius: 7px; font-size: 12px; font-weight: 600; padding: 0 14px; min-height: 0px; }}
+            QPushButton:hover {{ background: {COLORS['primary_h']}; }}
+        """)
+        manual_exit_btn.clicked.connect(self._on_manual_exit)
+        hdr.addWidget(manual_exit_btn)
         lay.addLayout(hdr)
 
         cols = ["Txn ID", "Plate", "Type", "Time In", "Date", "Staff (Entry)", "Flagged"]
@@ -333,6 +381,14 @@ class StaffWindow(QMainWindow):
 
     def _load_active(self):
         rows_raw = get_active_vehicles()
+
+        overstay_ids = set()
+        try:
+            for ov in get_overstay_vehicles():
+                overstay_ids.add(ov['transaction_id'])
+        except Exception:
+            pass
+
         rows = []
         for r in rows_raw:
             ti = r['time_in']
@@ -349,6 +405,18 @@ class StaffWindow(QMainWindow):
                 flag
             ])
         self.active_table.load_data(rows)
+
+        # Highlight overstay rows
+        if overstay_ids:
+            bg = QColor(COLORS['warning'])
+            bg.setAlpha(45)
+            for row_idx, r in enumerate(rows_raw):
+                if r['transaction_id'] in overstay_ids:
+                    for col in range(self.active_table.table.columnCount()):
+                        item = self.active_table.table.item(row_idx, col)
+                        if item:
+                            item.setBackground(bg)
+                            item.setForeground(QColor(COLORS['warning']))
 
     # ──────────────────────────────────────────────────────────────────────────
     # PAGE 3 — COMPLETED TRANSACTIONS
@@ -398,21 +466,11 @@ class StaffWindow(QMainWindow):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _start_cameras(self):
-        # Both entry and exit use the same built-in camera (index 0)
-        self.entry_worker = CameraWorker(camera_index=0, mode='entry')
-        self.entry_worker.frame_ready.connect(self._update_entry_frame)
-        self.entry_worker.vehicle_detected.connect(self._on_entry_detected)
-        self.entry_worker.ocr_failed.connect(self._on_entry_ocr_failed)
-        self.entry_worker.error_signal.connect(self._on_cam_error)
-
-        self.exit_worker = CameraWorker(camera_index=0, mode='exit')
-        self.exit_worker.frame_ready.connect(self._update_exit_frame)
-        self.exit_worker.vehicle_detected.connect(self._on_exit_detected)
-        self.exit_worker.ocr_failed.connect(lambda: None)  # exits just log unknown
-        self.exit_worker.error_signal.connect(self._on_cam_error)
-
-        self._entry_cam_on = False
-        self._exit_cam_on = False
+        s = get_settings() or {}
+        self._entry_cam_idx = int(s.get('entry_camera_index', 0))
+        self._exit_cam_idx = int(s.get('exit_camera_index', 1))
+        demo = s.get('demo_video_path', '') or ''
+        self._demo_video_path = demo if demo else None
 
 
     @pyqtSlot(QImage)
@@ -433,6 +491,15 @@ class StaffWindow(QMainWindow):
 
     @pyqtSlot(str, str)
     def _on_entry_detected(self, plate, vehicle_type):
+        bl = is_blacklisted(plate)
+        if bl:
+            QMessageBox.warning(
+                self, "Blacklisted Vehicle",
+                f"⛔  Plate {plate} is BLACKLISTED\n\n"
+                f"Reason: {bl.get('reason') or '—'}\n\nEntry has been denied."
+            )
+            return
+
         txn_id = log_vehicle_entry(plate, vehicle_type, self.user['user_id'])
         log_activity('staff', self.user['user_id'], self.user['username'],
                      'Vehicle Entry', f"{plate} ({vehicle_type}) — Txn: {txn_id}")
@@ -449,6 +516,14 @@ class StaffWindow(QMainWindow):
         dlg = ManualInputDialog(self)
         if dlg.exec_() == ManualInputDialog.Accepted and dlg.result_data:
             d = dlg.result_data
+            bl = is_blacklisted(d['plate_number'])
+            if bl:
+                QMessageBox.warning(
+                    self, "Blacklisted Vehicle",
+                    f"⛔  Plate {d['plate_number']} is BLACKLISTED\n\n"
+                    f"Reason: {bl.get('reason') or '—'}\n\nEntry has been denied."
+                )
+                return
             txn_id = log_vehicle_entry(d['plate_number'], d['vehicle_type'],
                                        self.user['user_id'])
             log_activity('staff', self.user['user_id'], self.user['username'],
@@ -465,15 +540,47 @@ class StaffWindow(QMainWindow):
             # Log as unknown
             log_vehicle_entry("UNKNOWN", "Unknown", self.user['user_id'], is_unknown=True)
 
+    def _on_manual_entry(self):
+        dlg = ManualInputDialog(self)
+        if dlg.exec_() == ManualInputDialog.Accepted and dlg.result_data:
+            d = dlg.result_data
+            bl = is_blacklisted(d['plate_number'])
+            if bl:
+                QMessageBox.warning(
+                    self, "Blacklisted Vehicle",
+                    f"⛔  Plate {d['plate_number']} is BLACKLISTED\n\n"
+                    f"Reason: {bl.get('reason') or '—'}\n\nEntry has been denied."
+                )
+                return
+            txn_id = log_vehicle_entry(d['plate_number'], d['vehicle_type'],
+                                       self.user['user_id'])
+            log_activity('staff', self.user['user_id'], self.user['username'],
+                         'Manual Entry', f"{d['plate_number']} — Txn: {txn_id}")
+            self._entry_count += 1
+            self.entry_card.set_value(self._entry_count)
+            self._recent_entries.insert(0, {
+                'plate_number': d['plate_number'],
+                'vehicle_type': d['vehicle_type'],
+                'time_in': datetime.now()
+            })
+            self._update_recent_list(self.recent_entry_frame, self._recent_entries)
+
     @pyqtSlot(str, str)
     def _on_exit_detected(self, plate, vehicle_type):
         txn = find_active_vehicle_by_plate(plate)
         if not txn:
-            return  # Not in system
+            QMessageBox.warning(
+                self, "Plate Not Found",
+                f"No active parking record found for plate {plate}.\n"
+                f"Please verify the plate number."
+            )
+            return
         result = log_vehicle_exit(txn['transaction_id'], self.user['user_id'])
         if not result:
             return
-        dlg = ExitConfirmDialog(result, self)
+
+        is_reserved = result.get('is_reserved', False)
+        dlg = ExitConfirmDialog(result, is_reserved=is_reserved, parent=self)
         if dlg.exec_() == ExitConfirmDialog.Accepted:
             log_activity('staff', self.user['user_id'], self.user['username'],
                          'Vehicle Exit',
@@ -481,10 +588,65 @@ class StaffWindow(QMainWindow):
             self._exit_count += 1
             self.exit_card2.set_value(self._exit_count)
             self._recent_exits.insert(0, {
-                'plate_number': plate, 'vehicle_type': vehicle_type,
+                'plate_number': plate,
+                'vehicle_type': txn.get('vehicle_type', vehicle_type),
                 'time_out': result['time_out']
             })
             self._update_recent_list(self.recent_exit_frame, self._recent_exits, is_exit=True)
+
+            # Offer PDF receipt
+            receipt_dlg = QDialog(self)
+            receipt_dlg.setWindowTitle("Save Receipt")
+            receipt_dlg.setFixedSize(400, 148)
+            receipt_dlg.setStyleSheet(f"background: {COLORS['bg']}; color: {COLORS['text']};")
+            rdl = QVBoxLayout(receipt_dlg)
+            rdl.setContentsMargins(24, 24, 24, 20)
+            rdl.setSpacing(20)
+            msg_lbl = QLabel("Would you like to save a PDF receipt\nfor this transaction?")
+            msg_lbl.setStyleSheet(f"color: {COLORS['text']}; font-size: 13px;")
+            msg_lbl.setAlignment(Qt.AlignCenter)
+            rdl.addWidget(msg_lbl)
+            btn_row = QHBoxLayout()
+            btn_row.setSpacing(12)
+            no_btn = QPushButton("No")
+            no_btn.setFixedHeight(36)
+            no_btn.setStyleSheet(f"""
+                QPushButton {{ background: {COLORS['bg_input']}; color: {COLORS['text']};
+                    border: 1px solid {COLORS['border']}; border-radius: 8px; font-size: 13px; }}
+                QPushButton:hover {{ background: {COLORS['bg_hover']}; }}
+            """)
+            no_btn.clicked.connect(receipt_dlg.reject)
+            yes_btn = QPushButton("Yes, Save Receipt")
+            yes_btn.setFixedHeight(36)
+            yes_btn.clicked.connect(receipt_dlg.accept)
+            btn_row.addWidget(no_btn)
+            btn_row.addWidget(yes_btn)
+            rdl.addLayout(btn_row)
+            if receipt_dlg.exec_() == QDialog.Accepted:
+                from utils.export import export_receipt_pdf
+                path, _ = QFileDialog.getSaveFileName(
+                    self, "Save Receipt",
+                    f"receipt_{result['transaction_id']}.pdf",
+                    "PDF Files (*.pdf)"
+                )
+                if path:
+                    try:
+                        export_receipt_pdf(result, path)
+                        QMessageBox.information(self, "Receipt Saved",
+                                                f"Receipt saved to:\n{path}")
+                    except Exception as e:
+                        QMessageBox.warning(self, "Export Failed", str(e))
+
+    def _on_exit_ocr_failed(self):
+        dlg = ManualInputDialog(self)
+        if dlg.exec_() == ManualInputDialog.Accepted and dlg.result_data:
+            plate = dlg.result_data['plate_number']
+            self._on_exit_detected(plate, dlg.result_data['vehicle_type'])
+
+    def _on_manual_exit(self):
+        plate, ok = QInputDialog.getText(self, "Manual Exit", "Enter plate number:")
+        if ok and plate.strip():
+            self._on_exit_detected(plate.strip().upper(), "")
 
     def _on_cam_error(self, msg):
         if hasattr(self, 'entry_cam_lbl'):
@@ -500,7 +662,9 @@ class StaffWindow(QMainWindow):
         self.clock_lbl.setText(datetime.now().strftime("%A, %d %B %Y  •  %H:%M:%S"))
 
     def _refresh_tables(self):
-        if self.stack.currentIndex() == 1:
+        if self.stack.currentIndex() == 0:
+            self._load_dashboard_summary()
+        elif self.stack.currentIndex() == 1:
             self._load_active()
         elif self.stack.currentIndex() == 2:
             self._load_completed()
@@ -516,8 +680,10 @@ class StaffWindow(QMainWindow):
                     border-radius: 6px; font-size: 12px; font-weight: 600; padding: 0 12px; }}
                 QPushButton:hover {{ background: #059669; }}
             """)
+            self._cam_hint_lbl.show()
         else:
-            self.entry_worker = CameraWorker(camera_index=1, mode='entry')
+            self.entry_worker = CameraWorker(camera_index=self._entry_cam_idx, mode='entry',
+                                             video_file=self._demo_video_path)
             self.entry_worker.frame_ready.connect(self._update_entry_frame)
             self.entry_worker.vehicle_detected.connect(self._on_entry_detected)
             self.entry_worker.ocr_failed.connect(self._on_entry_ocr_failed)
@@ -530,6 +696,7 @@ class StaffWindow(QMainWindow):
                     border-radius: 6px; font-size: 12px; font-weight: 600; padding: 0 12px; }}
                 QPushButton:hover {{ background: #DC2626; }}
             """)
+            self._check_hide_cam_hint()
 
     def _toggle_exit_cam(self):
         if self._exit_cam_on:
@@ -542,11 +709,13 @@ class StaffWindow(QMainWindow):
                     border-radius: 6px; font-size: 12px; font-weight: 600; padding: 0 12px; }}
                 QPushButton:hover {{ background: #059669; }}
             """)
+            self._cam_hint_lbl.show()
         else:
-            self.exit_worker = CameraWorker(camera_index=1, mode='exit')
+            self.exit_worker = CameraWorker(camera_index=self._exit_cam_idx, mode='exit',
+                                            video_file=self._demo_video_path)
             self.exit_worker.frame_ready.connect(self._update_exit_frame)
             self.exit_worker.vehicle_detected.connect(self._on_exit_detected)
-            self.exit_worker.error_signal.connect(lambda: None)
+            self.exit_worker.ocr_failed.connect(self._on_exit_ocr_failed)
             self.exit_worker.error_signal.connect(self._on_cam_error)
             self.exit_worker.start()
             self._exit_cam_on = True
@@ -556,7 +725,12 @@ class StaffWindow(QMainWindow):
                     border-radius: 6px; font-size: 12px; font-weight: 600; padding: 0 12px; }}
                 QPushButton:hover {{ background: #DC2626; }}
             """)
-            
+            self._check_hide_cam_hint()
+
+    def _check_hide_cam_hint(self):
+        if self._entry_cam_on and self._exit_cam_on:
+            self._cam_hint_lbl.hide()
+
     def _logout(self):
         dlg = BlindDropDialog(self)
         if dlg.exec_() != BlindDropDialog.Accepted or dlg.amount is None:
