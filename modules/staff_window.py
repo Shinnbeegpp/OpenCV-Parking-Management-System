@@ -13,7 +13,8 @@ from utils.database import (log_vehicle_entry, log_vehicle_exit,
                              find_active_vehicle_by_plate, log_activity, end_shift,
                              get_dashboard_summary, get_overstay_vehicles, is_blacklisted,
                              get_settings)
-from utils.detection import CameraWorker, load_models
+from utils.detection import CameraWorker, ModelLoader
+from utils.worker import Worker
 from modules.widgets import (SideNav, StatCard, SearchableTable, SectionLabel,
                               ManualInputDialog, ExitConfirmDialog, BlindDropDialog)
 
@@ -30,8 +31,10 @@ class StaffWindow(QMainWindow):
         self.setMinimumSize(1200, 750)
         self.resize(1280, 800)
 
-        # Load AI models (background, errors are non-fatal)
-        self._model_errors = load_models()
+        self._model_errors = []
+        self._model_loader = ModelLoader()
+        self._model_loader.finished.connect(self._on_models_loaded)
+        self._model_loader.start()
 
         self._entry_count = 0
         self._exit_count  = 0
@@ -141,14 +144,14 @@ class StaffWindow(QMainWindow):
         clock_timer.start(1000)
         self._update_clock()
 
-        if self._model_errors:
-            warn = QLabel("⚠  " + "  |  ".join(self._model_errors) + "  — detection limited")
-            warn.setStyleSheet(f"""
-                background: {COLORS['warning']}20; color: {COLORS['warning']};
-                border: 1px solid {COLORS['warning']}40; border-radius: 7px;
-                padding: 8px 14px; font-size: 12px;
-            """)
-            lay.addWidget(warn)
+        self._model_warn_label = QLabel()
+        self._model_warn_label.setStyleSheet(f"""
+            background: {COLORS['warning']}20; color: {COLORS['warning']};
+            border: 1px solid {COLORS['warning']}40; border-radius: 7px;
+            padding: 8px 14px; font-size: 12px;
+        """)
+        self._model_warn_label.hide()
+        lay.addWidget(self._model_warn_label)
 
         # Camera feeds
         cam_row = QHBoxLayout()
@@ -311,16 +314,28 @@ class StaffWindow(QMainWindow):
 
             lay.addWidget(row)
 
+    def _on_models_loaded(self, errors):
+        self._model_errors = errors
+        if errors:
+            self._model_warn_label.setText("⚠  " + "  |  ".join(errors) + "  — detection limited")
+            self._model_warn_label.show()
+
     def _load_dashboard_summary(self):
-        try:
-            summary = get_dashboard_summary()
-            if summary:
+        if getattr(self, '_summary_worker', None) and self._summary_worker.isRunning():
+            return
+        self._summary_worker = Worker(get_dashboard_summary)
+        self._summary_worker.result.connect(self._on_summary_loaded)
+        self._summary_worker.start()
+
+    def _on_summary_loaded(self, summary):
+        if summary:
+            try:
                 capacity = int(summary.get('capacity') or 50)
                 parked   = int(summary.get('currently_parked') or 0)
                 self.capacity_card.set_value(f"{parked}/{capacity}")
                 self.overstay_stat_card.set_value(summary.get('overstay_count', 0))
-        except Exception:
-            pass
+            except Exception:
+                pass
 
     # ──────────────────────────────────────────────────────────────────────────
     # PAGE 2 — ACTIVE PARKING
@@ -380,15 +395,23 @@ class StaffWindow(QMainWindow):
         return page
 
     def _load_active(self):
-        rows_raw = get_active_vehicles()
+        if getattr(self, '_active_worker', None) and self._active_worker.isRunning():
+            return
 
-        overstay_ids = set()
-        try:
-            for ov in get_overstay_vehicles():
-                overstay_ids.add(ov['transaction_id'])
-        except Exception:
-            pass
+        def fetch():
+            vehicles = get_active_vehicles()
+            try:
+                overstay = {ov['transaction_id'] for ov in get_overstay_vehicles()}
+            except Exception:
+                overstay = set()
+            return vehicles, overstay
 
+        self._active_worker = Worker(fetch)
+        self._active_worker.result.connect(self._on_active_loaded)
+        self._active_worker.start()
+
+    def _on_active_loaded(self, data):
+        rows_raw, overstay_ids = data
         rows = []
         for r in rows_raw:
             ti = r['time_in']
@@ -406,7 +429,6 @@ class StaffWindow(QMainWindow):
             ])
         self.active_table.load_data(rows)
 
-        # Highlight overstay rows
         if overstay_ids:
             bg = QColor(COLORS['warning'])
             bg.setAlpha(45)
@@ -442,7 +464,13 @@ class StaffWindow(QMainWindow):
         return page
 
     def _load_completed(self):
-        rows_raw = get_completed_transactions()
+        if getattr(self, '_completed_worker', None) and self._completed_worker.isRunning():
+            return
+        self._completed_worker = Worker(get_completed_transactions)
+        self._completed_worker.result.connect(self._on_completed_loaded)
+        self._completed_worker.start()
+
+    def _on_completed_loaded(self, rows_raw):
         rows = []
         for r in rows_raw:
             ti = r['time_in']; to = r['time_out']
@@ -466,7 +494,16 @@ class StaffWindow(QMainWindow):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _start_cameras(self):
-        s = get_settings() or {}
+        # Set defaults immediately so toggles work before settings load
+        self._entry_cam_idx = 0
+        self._exit_cam_idx = 1
+        self._demo_video_path = None
+        self._settings_worker = Worker(get_settings)
+        self._settings_worker.result.connect(self._on_settings_loaded)
+        self._settings_worker.start()
+
+    def _on_settings_loaded(self, s):
+        s = s or {}
         self._entry_cam_idx = int(s.get('entry_camera_index', 0))
         self._exit_cam_idx = int(s.get('exit_camera_index', 1))
         demo = s.get('demo_video_path', '') or ''
@@ -478,7 +515,7 @@ class StaffWindow(QMainWindow):
         if self.stack.currentIndex() == 0:
             pix = QPixmap.fromImage(img).scaled(
                 self.entry_cam_lbl.width(), self.entry_cam_lbl.height(),
-                Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                Qt.KeepAspectRatio, Qt.FastTransformation)
             self.entry_cam_lbl.setPixmap(pix)
 
     @pyqtSlot(QImage)
@@ -486,7 +523,7 @@ class StaffWindow(QMainWindow):
         if self.stack.currentIndex() == 0:
             pix = QPixmap.fromImage(img).scaled(
                 self.exit_cam_lbl.width(), self.exit_cam_lbl.height(),
-                Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                Qt.KeepAspectRatio, Qt.FastTransformation)
             self.exit_cam_lbl.setPixmap(pix)
 
     @pyqtSlot(str, str)

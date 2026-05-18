@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QPixmap
 from utils.database import login, start_shift, log_activity
 from utils.styles import COLORS
+from utils.worker import Worker
 
 
 class LoginWindow(QWidget):
@@ -121,35 +122,43 @@ class LoginWindow(QWidget):
 
         self.login_btn.setText("Signing in…")
         self.login_btn.setEnabled(False)
-        self.repaint()
 
-        try:
+        def _auth():
             result = login(username, password)
-        except Exception as e:
-            self._show_error(f"Database error: {e}")
-            self.login_btn.setText("Sign In")
-            self.login_btn.setEnabled(True)
-            return
+            if result['success']:
+                if result['role'] == 'staff':
+                    try:
+                        result['shift_id'] = start_shift(result['user_id'])
+                        log_activity('staff', result['user_id'], result['username'],
+                                     'Login', f"{result['full_name']} started shift")
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        log_activity('admin', result['user_id'], result['username'],
+                                     'Login', f"Admin {result['full_name']} logged in")
+                    except Exception:
+                        pass
+            return result
 
+        self._login_worker = Worker(_auth)
+        self._login_worker.result.connect(self._on_auth_result)
+        self._login_worker.error.connect(self._on_auth_error)
+        self._login_worker.start()
+
+    def _on_auth_result(self, result):
         self.login_btn.setText("Sign In")
         self.login_btn.setEnabled(True)
-
         if result['success']:
             self.error_label.hide()
-            if result['role'] == 'staff':
-                try:
-                    shift_id = start_shift(result['user_id'])
-                    result['shift_id'] = shift_id
-                    log_activity('staff', result['user_id'], result['username'],
-                                 'Login', f"{result['full_name']} started shift")
-                except Exception:
-                    pass
-            else:
-                log_activity('admin', result['user_id'], result['username'],
-                             'Login', f"Admin {result['full_name']} logged in")
             self.login_success.emit(result)
         else:
             self._show_error(result.get('message', 'Login failed.'))
+
+    def _on_auth_error(self, msg):
+        self.login_btn.setText("Sign In")
+        self.login_btn.setEnabled(True)
+        self._show_error(f"Database error: {msg}")
 
     def _show_error(self, msg):
         self.error_label.setText(msg)

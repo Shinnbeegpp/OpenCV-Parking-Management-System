@@ -11,7 +11,11 @@ bcrypt>=4.0.0
 opencv-python>=4.8.0
 ultralytics>=8.0.0        # YOLOv8 (auto-downloads yolov8n.pt on first run)
 easyocr>=1.7.0            # OCR for plate recognition
-torch>=2.0.0              # required by ultralytics and easyocr
+# torch and torchvision: install the CUDA build for GPU acceleration (recommended).
+# The plain PyPI packages are CPU-only. Use the command below instead of pip install -r:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# cu124 works with CUDA 12.4+ drivers (RTX 3050 driver 591.59 is compatible).
+torch>=2.0.0
 torchvision>=0.15.0
 
 numpy>=1.24.0

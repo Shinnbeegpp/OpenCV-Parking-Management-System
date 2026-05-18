@@ -429,9 +429,9 @@ def log_activity(user_type, user_id, username, action, details=''):
     cur = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO activity_logs (user_type, user_id, username, action, details)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (user_type, user_id, username, action, details))
+            INSERT INTO activity_logs (log_time, user_type, user_id, username, action, details)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (datetime.now(), user_type, user_id, username, action, details))
         conn.commit()
     finally:
         cur.close(); conn.close()

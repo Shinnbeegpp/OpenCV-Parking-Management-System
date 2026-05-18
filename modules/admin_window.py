@@ -42,6 +42,7 @@ from utils.database import (get_revenue_today, get_revenue_last_7_days,
                              get_peak_hours, get_revenue_per_staff, get_vehicle_type_breakdown)
 from modules.widgets import SideNav, StatCard, SectionLabel
 from utils.detection import CameraWorker
+from utils.worker import Worker
 
 from datetime import datetime
 
@@ -437,7 +438,15 @@ class AdminWindow(QMainWindow):
             btn.setProperty('selected', p == period)
             btn.style().unpolish(btn); btn.style().polish(btn)
 
-        data = get_revenue_over_time(period)
+        def fetch():
+            return get_revenue_over_time(period)
+
+        _w = Worker(fetch)
+        _w.result.connect(lambda data: self._render_chart(data, period))
+        _w.start()
+        self._chart_worker = _w
+
+    def _render_chart(self, data, period='7d'):
         self._chart.removeAllSeries()
         for ax in self._chart.axes():
             self._chart.removeAxis(ax)
@@ -485,8 +494,29 @@ class AdminWindow(QMainWindow):
         self._area.attachAxis(self._ay)
 
     def _load_overview(self):
+        if getattr(self, '_overview_worker', None) and self._overview_worker.isRunning():
+            return
+
+        def fetch():
+            return {
+                'summary':      get_dashboard_summary(),
+                'rev_today':    get_revenue_today(),
+                'rev_7d':       get_revenue_last_7_days(),
+                'rev_month':    get_revenue_last_month(),
+                'rev_year':     get_revenue_this_year(),
+                'chart_data':   get_revenue_over_time('7d'),
+                'active_staff': get_all_staff_with_current_shift(),
+                'notifs':       get_notifications(),
+                'logs':         get_recent_activity_logs(30),
+            }
+
+        self._overview_worker = Worker(fetch)
+        self._overview_worker.result.connect(self._on_overview_loaded)
+        self._overview_worker.start()
+
+    def _on_overview_loaded(self, data):
         try:
-            summary = get_dashboard_summary()
+            summary = data.get('summary') or {}
             if summary:
                 capacity = int(summary.get('capacity') or 50)
                 parked   = int(summary.get('currently_parked') or 0)
@@ -511,15 +541,18 @@ class AdminWindow(QMainWindow):
             pass
 
         try:
-            self.rev_today.set_value(f"₱{get_revenue_today():.2f}")
-            self.rev_yest.set_value(f"₱{get_revenue_last_7_days():.2f}")
-            self.rev_month.set_value(f"₱{get_revenue_last_month():.2f}")
-            self.rev_year.set_value(f"₱{get_revenue_this_year():.2f}")
+            self.rev_today.set_value(f"₱{data['rev_today']:.2f}")
+            self.rev_yest.set_value(f"₱{data['rev_7d']:.2f}")
+            self.rev_month.set_value(f"₱{data['rev_month']:.2f}")
+            self.rev_year.set_value(f"₱{data['rev_year']:.2f}")
         except Exception:
             pass
 
         try:
-            self._load_chart('7d')
+            for p, btn in self.period_btns.items():
+                btn.setProperty('selected', p == '7d')
+                btn.style().unpolish(btn); btn.style().polish(btn)
+            self._render_chart(data.get('chart_data') or [], '7d')
         except Exception:
             pass
 
@@ -529,7 +562,7 @@ class AdminWindow(QMainWindow):
                 if item.widget():
                     item.widget().deleteLater()
 
-            active = get_all_staff_with_current_shift()
+            active = data.get('active_staff') or []
             if not active:
                 lbl = QLabel("No staff currently on shift")
                 lbl.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 13px;")
@@ -560,7 +593,7 @@ class AdminWindow(QMainWindow):
                 if item.widget():
                     item.widget().deleteLater()
 
-            notifs = get_notifications()
+            notifs = data.get('notifs') or []
             if not notifs:
                 lbl = QLabel("No active notifications")
                 lbl.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 12px;")
@@ -588,12 +621,12 @@ class AdminWindow(QMainWindow):
             pass
 
         try:
-            logs = get_recent_activity_logs(30)
+            logs = data.get('logs') or []
             self.log_table.setRowCount(len(logs))
             for r, row in enumerate(logs):
                 ts = row['log_time']
                 ts_str = ts.strftime("%H:%M  %d %b") if isinstance(ts, datetime) else str(ts)
-                for c, val in enumerate([ts_str, row['username'], row['action'], row.get('details','')]):
+                for c, val in enumerate([ts_str, row['username'], row['action'], row.get('details', '')]):
                     item = QTableWidgetItem(str(val))
                     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                     self.log_table.setItem(r, c, item)
@@ -758,17 +791,30 @@ class AdminWindow(QMainWindow):
         return scroll
 
     def _load_history(self):
-        rows_raw = get_all_transactions_admin()
+        if getattr(self, '_history_worker', None) and self._history_worker.isRunning():
+            return
 
+        def fetch():
+            return {
+                'txns':      get_all_transactions_admin(),
+                'breakdown': get_vehicle_type_breakdown(),
+                'peak':      get_peak_hours(),
+                'per_staff': get_revenue_per_staff(),
+            }
+
+        self._history_worker = Worker(fetch)
+        self._history_worker.result.connect(self._on_history_loaded)
+        self._history_worker.start()
+
+    def _on_history_loaded(self, data):
         try:
-            breakdown = get_vehicle_type_breakdown()
             cars = motos = trucks = total_rev = 0
-            for b in breakdown:
+            for b in data.get('breakdown') or []:
                 vtype = (b['vehicle_type'] or '').lower()
                 cnt = int(b['count']); rev = float(b['revenue'])
                 total_rev += rev
-                if 'car' in vtype:      cars  += cnt
-                elif 'motorcycle' in vtype: motos += cnt
+                if 'car' in vtype:              cars  += cnt
+                elif 'motorcycle' in vtype:     motos += cnt
                 elif 'truck' in vtype or 'bus' in vtype: trucks += cnt
             self.analytics_cars.set_value(cars)
             self.analytics_motos.set_value(motos)
@@ -777,16 +823,17 @@ class AdminWindow(QMainWindow):
         except Exception:
             pass
 
+        rows_raw = data.get('txns') or []
         self._history_raw = rows_raw
         self._render_history(rows_raw)
 
         try:
-            self._load_peak_hours_chart()
+            self._render_peak_hours_chart(data.get('peak') or [])
         except Exception:
             pass
 
         try:
-            self._load_revenue_per_staff()
+            self._render_revenue_per_staff(data.get('per_staff') or [])
         except Exception:
             pass
 
@@ -851,6 +898,8 @@ class AdminWindow(QMainWindow):
             self.history_table.setCellWidget(row_idx, 11, btn_widget)
 
     def _filter_history(self, text):
+        if not hasattr(self, '_history_raw'):
+            return
         if not text:
             self._render_history(self._history_raw); return
         text = text.lower()
@@ -858,8 +907,7 @@ class AdminWindow(QMainWindow):
                     if any(text in str(v).lower() for v in r.values())]
         self._render_history(filtered)
 
-    def _load_peak_hours_chart(self):
-        data = get_peak_hours()
+    def _render_peak_hours_chart(self, data):
         self._peak_chart.removeAllSeries()
         for ax in self._peak_chart.axes():
             self._peak_chart.removeAxis(ax)
@@ -891,8 +939,7 @@ class AdminWindow(QMainWindow):
         self._peak_chart.addAxis(self._ph_axis_y, Qt.AlignLeft)
         self._ph_series.attachAxis(self._ph_axis_y)
 
-    def _load_revenue_per_staff(self):
-        data = get_revenue_per_staff()
+    def _render_revenue_per_staff(self, data):
         self.revenue_staff_table.setRowCount(len(data))
         for r_idx, r in enumerate(data):
             vals = [
@@ -1162,12 +1209,26 @@ class AdminWindow(QMainWindow):
         return scroll
 
     def _load_staff(self):
+        if getattr(self, '_staff_worker', None) and self._staff_worker.isRunning():
+            return
+
+        def fetch():
+            return {
+                'active': get_all_staff_with_current_shift(),
+                'all':    get_all_staff(),
+            }
+
+        self._staff_worker = Worker(fetch)
+        self._staff_worker.result.connect(self._on_staff_loaded)
+        self._staff_worker.start()
+
+    def _on_staff_loaded(self, data):
         try:
             while self.on_shift_layout.count():
                 item = self.on_shift_layout.takeAt(0)
                 if item.widget(): item.widget().deleteLater()
 
-            active = get_all_staff_with_current_shift()
+            active = data.get('active') or []
             if not active:
                 lbl = QLabel("No staff currently on shift.")
                 lbl.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 13px;")
@@ -1196,7 +1257,7 @@ class AdminWindow(QMainWindow):
             pass
 
         try:
-            self._staff_raw_list = get_all_staff()
+            self._staff_raw_list = data.get('all') or []
             self._render_staff(self._staff_raw_list)
 
             self.staff_combo.blockSignals(True)
@@ -1296,15 +1357,26 @@ class AdminWindow(QMainWindow):
                 QMessageBox.warning(self, "Error", str(e))
 
     def _load_shift_history(self):
-        try:
-            name = self.staff_combo.currentText()
-            if not name or not hasattr(self, '_staff_id_map'):
-                return
-            staff_id = self._staff_id_map.get(name)
-            if not staff_id:
-                return
+        name = self.staff_combo.currentText()
+        if not name or not hasattr(self, '_staff_id_map'):
+            return
+        staff_id = self._staff_id_map.get(name)
+        if not staff_id:
+            return
 
-            shifts = get_staff_login_logout_history(staff_id)
+        if getattr(self, '_shift_hist_worker', None) and self._shift_hist_worker.isRunning():
+            return
+
+        def fetch():
+            return get_staff_login_logout_history(staff_id)
+
+        self._shift_hist_worker = Worker(fetch)
+        self._shift_hist_worker.result.connect(
+            lambda shifts: self._render_shift_history(shifts, staff_id))
+        self._shift_hist_worker.start()
+
+    def _render_shift_history(self, shifts, staff_id):
+        try:
             self.shift_history_table.setRowCount(len(shifts))
 
             for r, sh in enumerate(shifts):
@@ -1431,10 +1503,27 @@ class AdminWindow(QMainWindow):
 
         lbl_style = f"color: {COLORS['text_muted']}; font-size: 12px; font-weight: 600;"
 
+        rate_type_container = QWidget()
+        rate_type_container.setStyleSheet("background: transparent; border: none;")
+        rt_lay = QVBoxLayout(rate_type_container)
+        rt_lay.setContentsMargins(0, 0, 0, 0)
+        rt_lay.setSpacing(5)
+
         self.settings_rate_type = QComboBox()
-        self.settings_rate_type.addItems(["hourly", "flat", "daily_max"])
+        self.settings_rate_type.addItems(["Hourly", "Flat", "Daily Max"])
         self.settings_rate_type.setStyleSheet(_field_style())
-        form.addRow(_lbl("Rate Type:", lbl_style), self.settings_rate_type)
+        rt_lay.addWidget(self.settings_rate_type)
+
+        rate_hint = QLabel(
+            "<b>Hourly</b> — charges Rate per Hour for each hour parked.  "
+            "<b>Flat</b> — charges a single fixed Flat Rate regardless of duration.  "
+            "<b>Daily Max</b> — charges Rate per Hour but never exceeds Daily Max Rate per day."
+        )
+        rate_hint.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        rate_hint.setWordWrap(True)
+        rt_lay.addWidget(rate_hint)
+
+        form.addRow(_lbl("Rate Type:", lbl_style), rate_type_container)
 
         self.settings_rate_hour = QLineEdit(); self.settings_rate_hour.setStyleSheet(_field_style())
         form.addRow(_lbl("Rate per Hour (₱):", lbl_style), self.settings_rate_hour)
@@ -1523,7 +1612,9 @@ class AdminWindow(QMainWindow):
             s = get_settings()
             if not s:
                 return
-            idx = self.settings_rate_type.findText(s.get('rate_type', 'hourly'))
+            _to_display = {"hourly": "Hourly", "flat": "Flat", "daily_max": "Daily Max"}
+            display_val = _to_display.get(s.get('rate_type', 'hourly'), "Hourly")
+            idx = self.settings_rate_type.findText(display_val)
             if idx >= 0:
                 self.settings_rate_type.setCurrentIndex(idx)
             self.settings_rate_hour.setText(str(s.get('rate_per_hour', '') or ''))
@@ -1543,8 +1634,9 @@ class AdminWindow(QMainWindow):
 
     def _save_settings(self):
         try:
+            _to_db = {"Hourly": "hourly", "Flat": "flat", "Daily Max": "daily_max"}
             kwargs = dict(
-                rate_type=self.settings_rate_type.currentText(),
+                rate_type=_to_db.get(self.settings_rate_type.currentText(), "hourly"),
             )
             def _to_float(text, key):
                 t = text.strip()

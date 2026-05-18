@@ -30,6 +30,14 @@ def load_models():
         _ocr_reader = None
     return []
 
+
+class ModelLoader(QThread):
+    """Load YOLO + EasyOCR models in a background thread to avoid blocking the UI."""
+    finished = pyqtSignal(list)  # list of error strings (empty = success)
+
+    def run(self):
+        self.finished.emit(load_models() or [])
+
 # YOLO class IDs that correspond to vehicles (COCO dataset)
 VEHICLE_CLASSES = {
     2: 'Car', 3: 'Motorcycle', 5: 'Bus', 7: 'Truck'
@@ -231,4 +239,4 @@ class CameraWorker(QThread):
 
     def stop(self):
         self._running = False
-        self.wait()
+        self.wait(500)  # cap wait so main thread isn't blocked if YOLO is mid-inference
